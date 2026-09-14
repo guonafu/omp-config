@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OMP Config
+Name[zh_CN]=OMP 配置
+GenericName=OMP Configuration
+Comment=omp (Oh My Pi) configuration GUI
+Categories=Qt;Utility;
+Exec=/usr/bin/omp-config
+Icon=omp-config
+Terminal=false
+StartupNotify=true

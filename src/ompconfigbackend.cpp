@@ -26,6 +26,11 @@ QString OmpConfigBackend::modelsPath()
     return QDir::homePath() + QStringLiteral("/.omp/agent/models.yml");
 }
 
+QString OmpConfigBackend::settingsPath()
+{
+    return QDir::homePath() + QStringLiteral("/.omp/agent/config.yml");
+}
+
 // ---------------------------------------------------------------------------
 // fetch
 // ---------------------------------------------------------------------------
@@ -152,8 +157,11 @@ QVariantList OmpConfigBackend::loadProviderModels(const QString &providerName)
 
 bool OmpConfigBackend::writeText(const QString &text, QString *errorOut)
 {
-    const QString path = modelsPath();
+    return writeTextAt(modelsPath(), text, errorOut);
+}
 
+bool OmpConfigBackend::writeTextAt(const QString &path, const QString &text, QString *errorOut)
+{
     // 校验: 重解析
     QString perr;
     const QVariant re = yamlstore::parse(text.toUtf8(), &perr);
@@ -225,5 +233,81 @@ bool OmpConfigBackend::saveProvider(const QString &name,
         return false;
     }
     emit saved(true, QStringLiteral("已保存 provider：%1").arg(name));
+    return true;
+}
+
+bool OmpConfigBackend::removeProvider(const QString &name)
+{
+    const QString n = name.trimmed();
+    if (n.isEmpty()) {
+        emit saved(false, QStringLiteral("provider 名称为空"));
+        return false;
+    }
+    QFile f(modelsPath());
+    QString orig;
+    if (f.open(QIODevice::ReadOnly))
+        orig = QString::fromUtf8(f.readAll());
+
+    const QString newText = ompyaml::removeProvider(orig, n);
+    if (newText == orig) {
+        emit saved(true, QStringLiteral("无该 provider（未改）"));
+        return true;
+    }
+    QString err;
+    if (!writeText(newText, &err)) {
+        emit saved(false, err);
+        return false;
+    }
+    emit saved(true, QStringLiteral("已删除 provider：%1").arg(n));
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// config.yml 读写(外观 + 角色绑定)
+// ---------------------------------------------------------------------------
+QVariantMap OmpConfigBackend::loadConfigDoc()
+{
+    QFile f(settingsPath());
+    if (!f.open(QIODevice::ReadOnly))
+        return QVariantMap();
+    return yamlstore::parse(f.readAll()).toMap();
+}
+
+void OmpConfigBackend::flatten(const QVariantMap &map, const QString &prefix, QVariantMap *out)
+{
+    for (auto it = map.cbegin(); it != map.cend(); ++it) {
+        const QString key = prefix.isEmpty() ? it.key() : prefix + QLatin1Char('.') + it.key();
+        if (it.value().typeId() == QMetaType::QVariantMap)
+            flatten(it.value().toMap(), key, out);
+        else
+            out->insert(key, it.value());
+    }
+}
+
+QVariantMap OmpConfigBackend::loadSettings()
+{
+    QVariantMap out;
+    flatten(loadConfigDoc(), QString(), &out);
+    return out;
+}
+
+bool OmpConfigBackend::saveSettings(const QVariantMap &patch)
+{
+    QFile f(settingsPath());
+    QString orig;
+    if (f.open(QIODevice::ReadOnly))
+        orig = QString::fromUtf8(f.readAll());
+
+    const QString newText = ompyaml::updateSettingPaths(orig, patch);
+    if (newText == orig) {
+        emit settingsSaved(true, QStringLiteral("无变化（未写入）"));
+        return true;
+    }
+    QString err;
+    if (!writeTextAt(settingsPath(), newText, &err)) {
+        emit settingsSaved(false, err);
+        return false;
+    }
+    emit settingsSaved(true, QStringLiteral("已保存设置"));
     return true;
 }

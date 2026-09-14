@@ -24,6 +24,47 @@ ApplicationWindow {
     property string formMax: "384000"
     property string currentProviderName: ""
     property bool showKey: false
+    property int editIndex: -1
+    function startEdit(i) {
+        if (i < 0) return
+        var mm = modelsModel.get(i)
+        editIndex = i
+        formId = mm.id || ""
+        formName = mm.name || ""
+        formReasoning = !!mm.reasoning
+        formInput = (mm.input && mm.input.length) ? mm.input.slice() : ["text"]
+        formContext = mm.contextWindow ? String(mm.contextWindow) : "1000000"
+        formMax = mm.maxTokens ? String(mm.maxTokens) : "384000"
+        modelIdCombo.editText = formId
+        modelIdCombo.currentIndex = -1
+        submitBtn.text = "更新 model"
+    }
+    function submitForm() {
+        if (formId.trim() === "") return
+        if (editIndex >= 0) {
+            modelsModel.set(editIndex, {
+                id: formId, name: formName, reasoning: formReasoning,
+                input: formInput, contextWindow: parseInt(formContext) || 0,
+                maxTokens: parseInt(formMax) || 0
+            })
+            editIndex = -1
+            submitBtn.text = "＋ 添加到 models"
+        } else {
+            addModel()
+        }
+    }
+    property var cfg: ({})
+    property var cfgPending: ({})
+    property var roleVals: ({})
+    ListModel { id: candidatesModel }
+    function loadCfg() { cfg = ompBackend.loadSettings() }
+    function touch(p, v) { cfgPending[p] = v; cfg[p] = v }
+    function saveCfg() { ompBackend.saveSettings(cfgPending); cfgPending = ({}) }
+    function saveRoles() {
+        var patch = {}
+        for (var k in roleVals) patch["modelRoles." + k] = roleVals[k]
+        ompBackend.saveSettings(patch)
+    }
 
     function fillProviders() {
         providersModel.clear()
@@ -47,15 +88,17 @@ ApplicationWindow {
         apiCombo.currentIndex = Math.max(0, apiCombo.model.indexOf(p.api))
         modelsModel.clear()
         var list = ompBackend.loadProviderModels(p.name)
-        for (var k = 0; k < list.length; ++k)
+        for (var k = 0; k < list.length; ++k) {
             modelsModel.append({
                 id: list[k].id,
                 name: list[k].name,
                 reasoning: (list[k].reasoning === true),
-                input: list[k].input || [],
+                input: root.inputToStr(list[k].input),
                 contextWindow: list[k].contextWindow || 0,
-                maxTokens: list[k].maxTokens || 0
+                maxTokens: list[k].maxTokens || 0,
+                expanded: false
             })
+        }
         statusText.text = "已选择 provider：" + p.name + "（" + list.length + " 个模型）"
     }
 
@@ -66,7 +109,8 @@ ApplicationWindow {
             var mm = modelsModel.get(i)
             list.push({
                 id: mm.id, name: mm.name, reasoning: mm.reasoning,
-                input: mm.input, contextWindow: mm.contextWindow, maxTokens: mm.maxTokens
+                input: (mm.input && mm.input.length ? String(mm.input).split(",") : []),
+                contextWindow: mm.contextWindow, maxTokens: mm.maxTokens
             })
         }
         ompBackend.saveProvider(currentProviderName, formProviderBaseUrl,
@@ -84,7 +128,8 @@ ApplicationWindow {
             id: formId, name: formName, reasoning: formReasoning,
             input: formInput,
             contextWindow: parseInt(formContext) || 0,
-            maxTokens: parseInt(formMax) || 0
+            maxTokens: parseInt(formMax) || 0,
+            expanded: false
         })
         formId = ""
         formName = ""
@@ -92,6 +137,49 @@ ApplicationWindow {
         formInput = ["text"]
         formContext = "1000000"
         formMax = "384000"
+    }
+
+    function getReasoning(i) { return i >= 0 && modelsModel.get(i).reasoning === true }
+    function addModelCard() {
+        modelsModel.append({
+            id: "", name: "", reasoning: false, input: "text",
+            contextWindow: 1048576, maxTokens: 131072, expanded: true
+        })
+    }
+    function toggleModel(i) {
+        if (i < 0) return
+        var m = modelsModel.get(i)
+        m.expanded = !m.expanded
+        modelsModel.set(i, m)
+    }
+    function updateModel(i, patch) {
+        if (i < 0) return
+        var m = modelsModel.get(i)
+        for (var k in patch) m[k] = patch[k]
+        modelsModel.set(i, m)
+    }
+    function inputToStr(v) {
+        if (v == null) return ""
+        if (typeof v === "string") return v
+        var out = []
+        var s = JSON.stringify(v)
+        if (s) { var p = JSON.parse(s); if (Array.isArray(p)) out = p }
+        return out.join(",")
+    }
+    function hasInput(i, which) {
+        if (i < 0 || which == null) return false
+        var t = modelsModel.get(i).input || ""
+        return ("," + t + ",").indexOf("," + which + ",") >= 0
+    }
+    function toggleInput(i, which, on) {
+        if (i < 0) return
+        var m = modelsModel.get(i)
+        var arr = (m.input || "").length ? String(m.input).split(",") : []
+        var ix = arr.indexOf(which)
+        if (on && ix < 0) arr.push(which)
+        else if (!on && ix >= 0) arr.splice(ix, 1)
+        m.input = arr.join(",")
+        modelsModel.set(i, m)
     }
 
     // ================= 侧边导航 =================
@@ -199,7 +287,6 @@ ApplicationWindow {
                             delegate: Rectangle {
                                 required property int index
                                 required property string name
-                                required property string baseUrl
                                 width: parent.width
                                 height: 32
                                 color: "transparent"
@@ -207,7 +294,7 @@ ApplicationWindow {
                                     anchors.fill: parent
                                     anchors.leftMargin: 8
                                     verticalAlignment: Text.AlignVCenter
-                                    text: name + "  ·  " + baseUrl
+                                    text: name
                                     elide: Text.ElideMiddle
                                 }
                                 MouseArea {
@@ -217,6 +304,11 @@ ApplicationWindow {
                             }
                             onCurrentIndexChanged: root.selectProvider(currentIndex)
                             Component.onCompleted: selectProvider(0)
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Button { text: "＋ 新增 Provider"; Layout.fillWidth: true; onClicked: addProviderDialog.open() }
+                            Button { text: "删除"; enabled: providersModel.count > 0; onClicked: confirmDeleteDialog.open() }
                         }
                     }
                 }
@@ -256,9 +348,12 @@ ApplicationWindow {
                                     echoMode: root.showKey ? TextInput.Normal : TextInput.Password
                                     onTextChanged: root.formProviderApiKey = text
                                 }
-                                Button {
-                                    text: root.showKey ? "隐藏" : "显示"
-                                    onClicked: root.showKey = !root.showKey
+                                Text {
+                                    text: "👁"
+                                    font.pixelSize: 15
+                                    Layout.preferredWidth: 22
+                                    color: root.showKey ? "#2c6fed" : "#888"
+                                    MouseArea { anchors.fill: parent; onClicked: root.showKey = !root.showKey }
                                 }
                             }
                             Text { text: "api" }
@@ -281,97 +376,107 @@ ApplicationWindow {
                         }
 
                         // ---- models 列表 ----
-                        Text { text: "models（本 provider）"; font.bold: true }
+                        RowLayout {
+                            Text { text: "models（本 provider）"; font.bold: true; Layout.fillWidth: true }
+                            Button { text: "获取模型列表"; onClicked: root.beginFetch() }
+                            Button { text: "＋ 添加模型"; onClicked: root.addModelCard() }
+                        }
                         ListView {
                             id: modelsList
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 130
+                            Layout.fillHeight: true
+                            spacing: 8
+                            topMargin: 8
+                            bottomMargin: 8
                             clip: true
                             model: ListModel { id: modelsModel }
-                            delegate: RowLayout {
-                                required property string name
+                            delegate: Rectangle {
+                                required property int index
                                 required property string id
+                                required property string name
+                                required property bool expanded
+                                required property int contextWindow
+                                required property int maxTokens
                                 width: parent.width
-                                spacing: 8
-                                Text { text: "· " + name; Layout.fillWidth: true; elide: Text.ElideMiddle }
-                                Text { text: "(" + id + ")"; color: "#888" }
-                                Button {
-                                    text: "删除"
-                                    onClicked: modelsModel.remove(index)
+                                height: expanded ? 190 : 52
+                                radius: 6
+                                border.color: "#e0e0e0"
+                                color: "#fafbfb"
+                                ColumnLayout {
+                                    id: cardCol
+                                    width: parent.width
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.margins: 8
+                                    spacing: 8
+                                    RowLayout {
+                                        spacing: 6
+                                        Text {
+                                            id: chevronText
+                                            text: expanded ? "▼" : "▶"
+                                            font.pixelSize: 10
+                                            color: "#555"
+                                            Layout.preferredWidth: 14
+                                            MouseArea { anchors.fill: parent; onClicked: root.toggleModel(index) }
+                                        }
+                                        ComboBox {
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            height: 32
+                                            editable: true
+                                            currentIndex: -1
+                                            textRole: "id"
+                                            model: candidatesModel
+                                            Component.onCompleted: editText = id
+                                            onActivated: root.updateModel(index, { id: currentText, name: (name === "" ? currentText : name) })
+                                            onAccepted: root.updateModel(index, { id: editText })
+                                        }
+                                        TextField {
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            height: 32
+                                            placeholderText: "显示名称"
+                                            text: name
+                                            onEditingFinished: root.updateModel(index, { name: text })
+                                        }
+                                        Text {
+                                            text: "✕"
+                                            color: "#888"
+                                            font.pixelSize: 13
+                                            Layout.preferredWidth: 16
+                                            MouseArea { anchors.fill: parent; onClicked: modelsModel.remove(index) }
+                                        }
+                                        Item { Layout.preferredWidth: 8 }
+                                    }
+                                    ColumnLayout {
+                                        visible: expanded
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Text { text: "Token 限制"; font.bold: true }
+                                        RowLayout {
+                                            spacing: 8
+                                            Text { text: "上下文" }
+                                            SpinBox { from: 0; to: 10000000; value: contextWindow; onValueChanged: root.updateModel(index, { contextWindow: value }) }
+                                            Text { text: "输出" }
+                                            SpinBox { from: 0; to: 10000000; value: maxTokens; onValueChanged: root.updateModel(index, { maxTokens: value }) }
+                                        }
+                                        RowLayout {
+                                            spacing: 8
+                                            Text { text: "reasoning" }
+                                            Switch { checked: root.getReasoning(index); onToggled: root.updateModel(index, { reasoning: checked }) }
+                                        }
+                                        RowLayout {
+                                            spacing: 8
+                                            Text { text: "input" }
+                                            CheckBox { text: "text";  checked: root.hasInput(index, "text");  onToggled: root.toggleInput(index, "text", checked) }
+                                            CheckBox { text: "image"; checked: root.hasInput(index, "image"); onToggled: root.toggleInput(index, "image", checked) }
+                                        }
+                                    }
                                 }
                             }
                         }
 
                         Rectangle { width: parent.width; height: 1; color: "#e2e2e2" }
-
-                        // ---- 添加/编辑模型表单 ----
-                        GridLayout {
-                            columns: 2
-                            columnSpacing: 8
-                            rowSpacing: 6
-                            Text { text: "id（获取到的模型）" }
-                            ComboBox {
-                                id: modelIdCombo
-                                Layout.fillWidth: true
-                                editable: true
-                                currentIndex: -1
-                                textRole: "id"
-                                model: ListModel { id: candidatesModel }
-                                onActivated: {
-                                    root.formId = currentText
-                                    root.formName = currentText   // name 默认 = id
-                                }
-                            }
-                            Text { text: "name（默认 = id）" }
-                            TextField {
-                                Layout.fillWidth: true
-                                text: root.formName
-                                onTextChanged: root.formName = text
-                            }
-                            Text { text: "reasoning" }
-                            Switch { checked: root.formReasoning; onToggled: root.formReasoning = checked }
-                            Text { text: "input" }
-                            RowLayout {
-                                spacing: 8
-                                CheckBox {
-                                    text: "text"
-                                    checked: root.formInput.indexOf("text") >= 0
-                                    onToggled: {
-                                        var a = root.formInput.slice()
-                                        var ix = a.indexOf("text")
-                                        if (checked && ix < 0) a.push("text")
-                                        else if (!checked && ix >= 0) a.splice(ix, 1)
-                                        root.formInput = a
-                                    }
-                                }
-                                CheckBox {
-                                    text: "image"
-                                    checked: root.formInput.indexOf("image") >= 0
-                                    onToggled: {
-                                        var a = root.formInput.slice()
-                                        var ix = a.indexOf("image")
-                                        if (checked && ix < 0) a.push("image")
-                                        else if (!checked && ix >= 0) a.splice(ix, 1)
-                                        root.formInput = a
-                                    }
-                                }
-                            }
-                            Text { text: "contextWindow" }
-                            TextField {
-                                Layout.fillWidth: true
-                                text: root.formContext
-                                validator: IntValidator { bottom: 0 }
-                                onTextChanged: root.formContext = text
-                            }
-                            Text { text: "maxTokens" }
-                            TextField {
-                                Layout.fillWidth: true
-                                text: root.formMax
-                                validator: IntValidator { bottom: 0 }
-                                onTextChanged: root.formMax = text
-                            }
-                        }
-                        Button { text: "＋ 添加到 models"; onClicked: root.addModel() }
                     }
                 }
             }
@@ -384,6 +489,12 @@ ApplicationWindow {
                 anchors.margins: 16
                 spacing: 12
                 Text { text: "角色绑定  /  将模型绑定到各工作角色（modelRoles）"; font.pixelSize: 15; font.bold: true }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Button { text: "保存角色绑定 → config.yml"; onClicked: root.saveRoles() }
+                    Text { id: rolesStatus; color: "#666"; text: ""; elide: Text.ElideRight; Layout.fillWidth: true }
+                }
 
                 ListView {
                     Layout.fillWidth: true
@@ -418,7 +529,8 @@ ApplicationWindow {
                             ComboBox {
                                 Layout.fillWidth: true
                                 editable: true
-                                currentIndex: 0
+                                editText: root.cfg["modelRoles." + role] || ""
+                                onCurrentTextChanged: root.roleVals[role] = currentText
                                 model: ["uniontech-ai/deepseek-v4-flash-0731:auto",
                                         "uniontech-ai/deepseek-v4-pro-0813",
                                         "uniontech-ai-ch/deepseek-v4-flash-0731",
@@ -448,6 +560,12 @@ ApplicationWindow {
                     Text { text: "主题与外观  /  theme · statusLine · display"
                            font.pixelSize: 15; font.bold: true }
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Button { text: "保存外观 → config.yml"; onClicked: root.saveCfg() }
+                        Text { id: cfgStatus; color: "#666"; text: ""; elide: Text.ElideRight; Layout.fillWidth: true }
+                    }
+
                     GroupBox {
                         title: "主题（Theme）"
                         Layout.fillWidth: true
@@ -456,13 +574,31 @@ ApplicationWindow {
                             columnSpacing: 16
                             rowSpacing: 8
                             Text { text: "深色主题 dark" }
-                            ComboBox { Layout.minimumWidth: 220; model: ["titanium","anthracite","dark-github","dark-nord","dark-dracula"] }
+                            ComboBox {
+                                Layout.minimumWidth: 220; editable: true
+                                editText: root.cfg["theme.dark"] || ""
+                                onCurrentTextChanged: root.touch("theme.dark", currentText)
+                                model: ["titanium","anthracite","dark-github","dark-nord","dark-dracula"]
+                            }
                             Text { text: "浅色主题 light" }
-                            ComboBox { Layout.minimumWidth: 220; model: ["light","light-solarized","light-github"] }
+                            ComboBox {
+                                Layout.minimumWidth: 220; editable: true
+                                editText: root.cfg["theme.light"] || ""
+                                onCurrentTextChanged: root.touch("theme.light", currentText)
+                                model: ["light","light-solarized","light-github"]
+                            }
                             Text { text: "符号字形 symbolPreset" }
-                            ComboBox { Layout.minimumWidth: 220; model: ["unicode","nerd","ascii"] }
+                            ComboBox {
+                                Layout.minimumWidth: 220; editable: true
+                                editText: root.cfg["symbolPreset"] || ""
+                                onCurrentTextChanged: root.touch("symbolPreset", currentText)
+                                model: ["unicode","nerd","ascii"]
+                            }
                             Text { text: "色盲模式 colorBlindMode" }
-                            Switch { checked: false }
+                            Switch {
+                                checked: root.cfg["colorBlindMode"] === true
+                                onToggled: root.touch("colorBlindMode", checked)
+                            }
                         }
                     }
 
@@ -474,13 +610,29 @@ ApplicationWindow {
                             columnSpacing: 16
                             rowSpacing: 8
                             Text { text: "预设 preset" }
-                            ComboBox { Layout.minimumWidth: 220; model: ["default","minimal","compact","full","nerd","ascii","custom"] }
+                            ComboBox {
+                                Layout.minimumWidth: 220; editable: true
+                                editText: root.cfg["statusLine.preset"] || ""
+                                onCurrentTextChanged: root.touch("statusLine.preset", currentText)
+                                model: ["default","minimal","compact","full","nerd","ascii","custom"]
+                            }
                             Text { text: "分隔符 separator" }
-                            ComboBox { Layout.minimumWidth: 220; model: ["powerline","powerline-thin","slash","pipe","block","none","ascii"] }
+                            ComboBox {
+                                Layout.minimumWidth: 220; editable: true
+                                editText: root.cfg["statusLine.separator"] || ""
+                                onCurrentTextChanged: root.touch("statusLine.separator", currentText)
+                                model: ["powerline","powerline-thin","slash","pipe","block","none","ascii"]
+                            }
                             Text { text: "会话强调色 sessionAccent" }
-                            Switch { checked: true }
+                            Switch {
+                                checked: root.cfg["statusLine.sessionAccent"] === true
+                                onToggled: root.touch("statusLine.sessionAccent", checked)
+                            }
                             Text { text: "透明背景 transparent" }
-                            Switch { checked: false }
+                            Switch {
+                                checked: root.cfg["statusLine.transparent"] === true
+                                onToggled: root.touch("statusLine.transparent", checked)
+                            }
                         }
                     }
 
@@ -492,17 +644,37 @@ ApplicationWindow {
                             columnSpacing: 16
                             rowSpacing: 8
                             Text { text: "加载动画 shimmer" }
-                            ComboBox { Layout.minimumWidth: 220; model: ["classic","kitt","disabled"] }
+                            ComboBox {
+                                Layout.minimumWidth: 220; editable: true
+                                editText: root.cfg["display.shimmer"] || ""
+                                onCurrentTextChanged: root.touch("display.shimmer", currentText)
+                                model: ["classic","kitt","disabled"]
+                            }
                             Text { text: "显示 token 用量 showTokenUsage" }
-                            Switch { checked: false }
+                            Switch {
+                                checked: root.cfg["display.showTokenUsage"] === true
+                                onToggled: root.touch("display.showTokenUsage", checked)
+                            }
                             Text { text: "缓存未命中标记 cacheMissMarker" }
-                            Switch { checked: false }
+                            Switch {
+                                checked: root.cfg["display.cacheMissMarker"] === true
+                                onToggled: root.touch("display.cacheMissMarker", checked)
+                            }
                             Text { text: "平滑流式 smoothStreaming" }
-                            Switch { checked: true }
+                            Switch {
+                                checked: root.cfg["display.smoothStreaming"] === true
+                                onToggled: root.touch("display.smoothStreaming", checked)
+                            }
                             Text { text: "隐藏工具调用 hideToolActivity" }
-                            Switch { checked: false }
+                            Switch {
+                                checked: root.cfg["display.hideToolActivity"] === true
+                                onToggled: root.touch("display.hideToolActivity", checked)
+                            }
                             Text { text: "压缩收起 collapseCompacted" }
-                            Switch { checked: true }
+                            Switch {
+                                checked: root.cfg["display.collapseCompacted"] === true
+                                onToggled: root.touch("display.collapseCompacted", checked)
+                            }
                         }
                     }
 
@@ -514,9 +686,17 @@ ApplicationWindow {
                             columnSpacing: 16
                             rowSpacing: 8
                             Text { text: "默认思考级别 defaultThinkingLevel" }
-                            ComboBox { Layout.minimumWidth: 220; model: ["minimal","low","medium","high","xhigh","max","auto"] }
+                            ComboBox {
+                                Layout.minimumWidth: 220; editable: true
+                                editText: root.cfg["defaultThinkingLevel"] || ""
+                                onCurrentTextChanged: root.touch("defaultThinkingLevel", currentText)
+                                model: ["minimal","low","medium","high","xhigh","max","auto"]
+                            }
                             Text { text: "隐藏思考块 hideThinkingBlock" }
-                            Switch { checked: false }
+                            Switch {
+                                checked: root.cfg["hideThinkingBlock"] === true
+                                onToggled: root.touch("hideThinkingBlock", checked)
+                            }
                         }
                     }
                 }
@@ -540,13 +720,64 @@ ApplicationWindow {
         function onSaved(ok, message) {
             statusText.text = ok ? "✓ " + message : "✗ 保存失败：" + message
         }
+        function onSettingsSaved(ok, message) {
+            var m = ok ? "✓ " + message : "✗ " + message
+            if (cfgStatus) cfgStatus.text = m
+            if (rolesStatus) rolesStatus.text = m
+        }
+    }
+
+    Dialog {
+        id: addProviderDialog
+        title: "新增 Provider"
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        width: 360
+        contentItem: ColumnLayout {
+            spacing: 8
+            Text { text: "名称（唯一 key，将作为 models.yml 的 provider 键）" }
+            TextField { id: newProviderName; placeholderText: "例如：my-provider" }
+        }
+        onAccepted: {
+            var nm = newProviderName.text.trim()
+            if (!nm) return
+            var dup = false
+            for (var i = 0; i < providersModel.count; ++i)
+                if (providersModel.get(i).name === nm) { dup = true; break }
+            if (dup) { statusText.text = "provider 已存在：" + nm; return }
+            providersModel.append({ name: nm, baseUrl: "", apiKey: "", api: "openai-completions" })
+            providerList.currentIndex = providersModel.count - 1
+            newProviderName.text = ""
+            statusText.text = "新增 provider：" + nm + "，请在右侧填 baseUrl/apiKey 后保存"
+        }
+    }
+
+    Dialog {
+        id: confirmDeleteDialog
+        title: "删除 Provider"
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        width: 380
+        contentItem: ColumnLayout {
+            spacing: 8
+            Text { text: "确定删除 provider：" + root.currentProviderName + " ？（连同其所有 models）" }
+            Text { text: "会写入 ~/.omp/agent/models.yml"; color: "#999"; font.pixelSize: 12 }
+        }
+        onAccepted: {
+            if (!root.currentProviderName) return
+            ompBackend.removeProvider(root.currentProviderName)
+            for (var i = 0; i < providersModel.count; ++i)
+                if (providersModel.get(i).name === root.currentProviderName) { providersModel.remove(i); break }
+            if (providersModel.count > 0) { providerList.currentIndex = 0; selectProvider(0) }
+            else root.currentProviderName = ""
+        }
     }
 
     Component.onCompleted: {
+        loadCfg()
         fillProviders()
         if (providersModel.count > 0) {
             providerList.currentIndex = 0
-            selectProvider(0)
         } else {
             statusText.text = "~/.omp/agent/models.yml 暂无 provider"
         }

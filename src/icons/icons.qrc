@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="pi.png">pi.png</file>
+        <file alias="pi@2x.png">pi@2x.png</file>
+    </qresource>
+</RCC>

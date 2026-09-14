@@ -18,4 +18,11 @@ QString updateProvider(const QString &original,
                        const QString &auth,
                        const QVariantList &models);
 
+// config.yml 式顶层 map:按点分路径(如 "theme.dark"/"modelRoles.smol"/"display.showTokenUsage")
+// 改写叶子值;只动存在的路径行,未触及行原样。数组用 flow 风格。
+QString updateSettingPaths(const QString &original, const QVariantMap &patches);
+
+// 移除整个 provider 块;无该 provider 返回原文。
+QString removeProvider(const QString &original, const QString &providerName);
+
 } // namespace ompyaml

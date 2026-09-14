@@ -14,6 +14,8 @@ public:
 
     // 返回 models.yml 的路径(默认 ~/.omp/agent/models.yml)
     static QString modelsPath();
+    // 返回 config.yml 的路径(默认 ~/.omp/agent/config.yml)
+    static QString settingsPath();
 
     // ---- fetch: 拉取 provider 模型 ----
     Q_INVOKABLE void fetchModels(const QString &baseUrl, const QString &apiKey, const QString &auth);
@@ -32,16 +34,29 @@ public:
                                   const QString &auth,
                                   const QVariantList &models);
 
+    // 删除 provider(及其 models)
+    Q_INVOKABLE bool removeProvider(const QString &name);
+
+    // ---- 读写 config.yml(外观 + 角色绑定) ----
+    // 返回扁平 { "theme.dark": value, "modelRoles.smol": "...", ... }(递归打平)
+    Q_INVOKABLE QVariantMap loadSettings();
+    // patch: { "theme.dark": ..., "display.showTokenUsage": ... } 字段级最小改写
+    Q_INVOKABLE bool saveSettings(const QVariantMap &patch);
+
 signals:
     void modelsFetched(const QVariantList &ids);
     void fetchFailed(const QString &reason);
     void saved(bool ok, const QString &message);
+    void settingsSaved(bool ok, const QString &message);
 
 private:
     // 读取并解析 models.yml;缺失/解析失败时返回空 map
     QVariantMap loadDoc();
+    QVariantMap loadConfigDoc();
     bool writeText(const QString &text, QString *errorOut);
+    bool writeTextAt(const QString &path, const QString &text, QString *errorOut);
     void handleFetchReply(QNetworkReply *reply);
+    static void flatten(const QVariantMap &map, const QString &prefix, QVariantMap *out);
 
     QNetworkAccessManager m_nam;
     QString m_error;

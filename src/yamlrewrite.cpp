@@ -52,9 +52,9 @@ QStringList canonicalModelLines(const QVariantMap &m, int itemIndent) {
             + (m.value(QStringLiteral("reasoning")).toBool() ? QStringLiteral("true") : QStringLiteral("false"));
     const QVariantList input = m.value(QStringLiteral("input")).toList();
     if (!input.isEmpty()) {
-        out << QString(itemIndent + 2, QLatin1Char(' ')) + QStringLiteral("input:");
-        for (const QVariant &v : input)
-            out << QString(itemIndent + 4, QLatin1Char(' ')) + QStringLiteral("- ") + v.toString();
+        QStringList items;
+        for (const QVariant &v : input) items << yamlquote(v.toString());
+        out << QString(itemIndent + 2, QLatin1Char(' ')) + QStringLiteral("input: [") + items.join(QStringLiteral(", ")) + QLatin1Char(']');
     }
     if (m.contains(QLatin1String("contextWindow")))
         out << QString(itemIndent + 2, QLatin1Char(' ')) + QStringLiteral("contextWindow: ")
@@ -232,6 +232,98 @@ QString updateProvider(const QString &original,
 
     QString text = out.join(QLatin1Char('\n'));
     if (text == original) return original;             // 无真实改动 → 原样(且不触发写)
+    if (original.endsWith(QLatin1Char('\n'))) text += QLatin1Char('\n');
+    return text;
+}
+
+// ---------------------------------------------------------------------------
+// config.yml 式顶层 map:路径改写(点分)。只改既有路径行。
+// ---------------------------------------------------------------------------
+namespace {
+QString formatSettingValue(const QVariant &v) {
+    switch (v.typeId()) {
+    case QMetaType::Bool: return v.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    case QMetaType::Int:
+    case QMetaType::UInt:
+    case QMetaType::LongLong:
+    case QMetaType::ULongLong: return QString::number(v.toLongLong());
+    case QMetaType::Double: return QString::number(v.toDouble());
+    case QMetaType::QVariantList: {
+        QStringList items;
+        for (const QVariant &e : v.toList())
+            items << yamlquote(e.toString());
+        return QLatin1Char('[') + items.join(QStringLiteral(", ")) + QLatin1Char(']');
+    }
+    default: return yamlquote(v.toString());
+    }
+}
+} // namespace
+
+QString updateSettingPaths(const QString &original, const QVariantMap &patches)
+{
+    QStringList lines = original.split(QLatin1Char('\n'));
+    for (auto it = patches.cbegin(); it != patches.cend(); ++it) {
+        const QStringList segs = it.key().split(QLatin1Char('.'));
+        if (segs.isEmpty()) continue;
+        int searchFrom = 0;
+        int found = -1;
+        // 逐段定位(每段缩进=段号*2)
+        for (int s = 0; s < segs.size(); ++s) {
+            const QString want = QString(s * 2, QLatin1Char(' ')) + segs.at(s) + QLatin1Char(':');
+            found = -1;
+            for (int i = searchFrom; i < lines.size(); ++i) {
+                if (indentOf(lines.at(i)) == s * 2 && lines.at(i).startsWith(want)) {
+                    found = i;
+                    break;
+                }
+            }
+            if (found < 0) break; // 该路径缺失 → 跳过
+            searchFrom = found + 1;
+            if (s == segs.size() - 1) break;
+        }
+        if (found < 0) continue; // 路径不存在,不写
+        const QString line = lines.at(found);
+        const int colon = line.indexOf(QLatin1Char(':'));
+        if (colon < 0) continue;
+        QString head = line.left(colon + 1);
+        // 保留随后的分隔空格数
+        int ws = 0;
+        for (int k = colon + 1; k < line.size() && line.at(k).isSpace(); ++k) ++ws;
+        lines[found] = head + QString(qMax(ws, 1), QLatin1Char(' ')) + formatSettingValue(it.value());
+    }
+    QString text = lines.join(QLatin1Char('\n'));
+    if (text == original) return original;
+    if (original.endsWith(QLatin1Char('\n'))) text += QLatin1Char('\n');
+    return text;
+}
+
+QString removeProvider(const QString &original, const QString &providerName)
+{
+    const QStringList all = original.split(QLatin1Char('\n'));
+    const QString keyLine = QStringLiteral("  ") + providerName + QLatin1Char(':');
+    int start = -1;
+    for (int i = 0; i < all.size(); ++i)
+        if (all.at(i) == keyLine) { start = i; break; }
+    if (start < 0) return original;
+
+    int blockEnd = all.size();
+    for (int i = start + 1; i < all.size(); ++i)
+        if (isProviderKeyLine(all.at(i))) { blockEnd = i; break; }
+
+    // 向前/向后跳过空白,避免留空行
+    int pb = start - 1;
+    while (pb >= 0 && all.at(pb).trimmed().isEmpty()) --pb;
+    int sb = blockEnd;
+    while (sb < all.size() && all.at(sb).trimmed().isEmpty()) ++sb;
+
+    QStringList out;
+    for (int i = 0; i <= pb; ++i) out << all.at(i);
+    if (pb >= 0 && sb < all.size() && !out.isEmpty() && !out.last().trimmed().isEmpty())
+        out << QString(); // 分隔空行
+    for (int i = sb; i < all.size(); ++i) out << all.at(i);
+
+    QString text = out.join(QLatin1Char('\n'));
+    if (text == original) return original;
     if (original.endsWith(QLatin1Char('\n'))) text += QLatin1Char('\n');
     return text;
 }
