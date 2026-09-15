@@ -16,6 +16,14 @@
   - 变更后重启 omp 生效。
   - schema 参考: `node_modules/@oh-my-pi/pi-coding-agent/src/config/{settings-schema.ts, settings.ts, models-config.ts, models-config-schema-bundle.ts, model-registry.ts}`; 路径 `pi-utils/src/dirs.ts`。
 - 多 profile(`--profile`) 不做, 默认单 profile。
+- UI 事实(已探明, 勿重查; 本机 deepin 深色主题, Qt Quick Controls 解析到 `org.deepin.dtk` 样式):
+  - 该样式的 `SpinBox` 键不进去: `editable: true` 时 contentItem(`text: control.displayText`)被外部回写 `value` 触发 binding loop;`editable: false` 时 contentItem 为 readOnly TextInput。数字栏一律用 `TextField + IntValidator`。
+  - 控件默认取系统主题调色板, 而卡片底是硬编码浅色(`#fafbfb`): 深色主题下 `TextField`/`ComboBox`/`SpinBox` 白字白底不可见(`Switch`/`CheckBox` 不受影响)。浅色底上的输入控件必须显式给浅色 `palette`——模型卡里 4 个输入控件(id ComboBox、name TextField、两个 token 栏)已用根属性 `cardInputBase`/`cardInputText` 统一覆写;ComboBox 的弹窗另见下一条。
+  - 该样式的 ComboBox **弹窗面板**是 `FloatingPanel`(`D.InWindowBlur` 毛玻璃), 本机 blur 不生效 → 面板近乎全透明, 背后文字透上来;其自带 delegate(MenuItem)配色又取 DTK 主题色, 与硬编码浅色卡片各走一套(深色主题下会出现看不见的组合)。另外 Qt 6.8 + 该样式下走 `ComboBox.delegateModel` 的弹窗**只渲染得出第一项**(数组/ListModel 都试过;数组还额外丢首项)。
+  - 结论: 全项目 ComboBox 统一走 `AppComboBox`(`src/qml/Main.qml` 内联组件)——自绘不透明浅色面板 + 自绘行(直接 `model: comboBox.model`, 行高固定 32, 弹窗高度 = 条数 × 行高), **不用 delegateModel**。鼠标点选发自定义 `itemChosen(index)`, 键盘 Up/Down/Enter 仍由 ComboBox 自身处理(Enter 发 `activated`)。
+  - 该样式的可编辑 ComboBox **手输文本无效**: 它的 contentItem 是 `RowLayout`(内含 TextField), 而 `QQuickComboBoxPrivate::contentItemChange` 只认 `QQuickTextInput*` → `editText`/`accepted` 都不通, 键进去的文字只停在样式内部那个 TextField 里。id 栏因此只能从弹窗候选里选。
+  - `activated(index)` 的参数名会遮蔽 delegate 的 `index` —— 回写模型必须用卡片自己的 `modelCard.index`, 否则会写到第 N 个卡片或越界 TypeError。
+  - 设置页(config.yml)的写入是「字段级改写」: 路径不存在的键**不会新增**(`updateSettingPaths` 里 "路径不存在,不写"), 所以 config.yml 不存在时点保存只会提示"无变化"。
 - 交付: 跨平台可安装包 —— Linux `.deb`(deepin/UOS, 首版)先行; Windows/macOS 的分发由票券 05 定夺。
 
 ## Decisions so far

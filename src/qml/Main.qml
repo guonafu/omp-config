@@ -12,47 +12,17 @@ ApplicationWindow {
 
     property int currentPage: 0
 
+    // 模型卡片是硬编码浅色底(#fafbfb), 而控件默认取系统主题调色板(本机深色主题 → 白字白底
+    // 不可见)。落在卡片上的输入控件统一显式给浅色值, 深浅主题下都保持可读。
+    readonly property color cardInputBase: "#ffffff"
+    readonly property color cardInputText: "#1a1a1a"
+
     // ---- 模型配置页状态 ----
     property string formProviderBaseUrl: ""
     property string formProviderApiKey: ""
     property string formProviderApi: "openai-completions"
-    property string formId: ""
-    property string formName: ""
-    property bool   formReasoning: false
-    property var    formInput: ["text"]
-    property string formContext: "1000000"
-    property string formMax: "384000"
     property string currentProviderName: ""
     property bool showKey: false
-    property int editIndex: -1
-    function startEdit(i) {
-        if (i < 0) return
-        var mm = modelsModel.get(i)
-        editIndex = i
-        formId = mm.id || ""
-        formName = mm.name || ""
-        formReasoning = !!mm.reasoning
-        formInput = (mm.input && mm.input.length) ? mm.input.slice() : ["text"]
-        formContext = mm.contextWindow ? String(mm.contextWindow) : "1000000"
-        formMax = mm.maxTokens ? String(mm.maxTokens) : "384000"
-        modelIdCombo.editText = formId
-        modelIdCombo.currentIndex = -1
-        submitBtn.text = "更新 model"
-    }
-    function submitForm() {
-        if (formId.trim() === "") return
-        if (editIndex >= 0) {
-            modelsModel.set(editIndex, {
-                id: formId, name: formName, reasoning: formReasoning,
-                input: formInput, contextWindow: parseInt(formContext) || 0,
-                maxTokens: parseInt(formMax) || 0
-            })
-            editIndex = -1
-            submitBtn.text = "＋ 添加到 models"
-        } else {
-            addModel()
-        }
-    }
     property var cfg: ({})
     property var cfgPending: ({})
     property var roleVals: ({})
@@ -126,28 +96,11 @@ ApplicationWindow {
         ompBackend.fetchModels(formProviderBaseUrl, formProviderApiKey, formProviderApi)
     }
 
-    function addModel() {
-        if (formId.trim() === "") return
-        modelsModel.append({
-            id: formId, name: formName, reasoning: formReasoning,
-            input: formInput,
-            contextWindow: parseInt(formContext) || 0,
-            maxTokens: parseInt(formMax) || 0,
-            expanded: false
-        })
-        formId = ""
-        formName = ""
-        formReasoning = false
-        formInput = ["text"]
-        formContext = "1000000"
-        formMax = "384000"
-    }
-
     function getReasoning(i) { return i >= 0 && modelsModel.get(i).reasoning === true }
     function addModelCard() {
         modelsModel.append({
             id: "", name: "", reasoning: false, input: "text",
-            contextWindow: 1048576, maxTokens: 131072, expanded: true
+            contextWindow: 1000000, maxTokens: 384000, expanded: true
         })
     }
     function toggleModel(i) {
@@ -164,6 +117,12 @@ ApplicationWindow {
         var m = modelsModel.get(i)
         for (var k in patch) m[k] = patch[k]
         modelsModel.set(i, m)
+    }
+    // 选中候选后回写该卡片的 model id: 名字为空的一并补上。
+    function applyModelId(i, text) {
+        var m = modelsModel.get(i)
+        if (!m) return
+        updateModel(i, { id: text, name: (m.name === "" ? text : m.name) })
     }
     function inputToStr(v) {
         if (v == null) return ""
@@ -187,6 +146,80 @@ ApplicationWindow {
         else if (!on && ix >= 0) arr.splice(ix, 1)
         m.input = arr.join(",")
         modelsModel.set(i, m)
+    }
+
+    // 全项目的 ComboBox 都用它。
+    // 原生弹窗面板是 DTK 的 FloatingPanel → D.InWindowBlur(毛玻璃), 本机 blur 不生效, 面板近乎
+    // 全透明, 背后文字直接透上来; 它自带的 delegate(MenuItem) 配色又取自 DTK 主题色, 与本 app
+    // 硬编码的浅色面(卡片 #fafbfb)各走一套, 深色主题下会出现看不见的组合。
+    // 这里统一换成自绘弹窗: 不透明浅色面板 + 自绘行(配色跟卡片一致) + 直接吃 ComboBox.model。
+    // 不走 ComboBox.delegateModel —— 实测(Qt 6.8 + DTK 样式)走它时弹窗里只会渲染出一项;
+    // 鼠标点选经 itemChosen 通知外部, 键盘 Up/Down/Enter 仍由 ComboBox 自己处理(Enter 会发
+    // activated)。selection 后 currentIndex/currentText/editText 仍由 ComboBox 更新。
+    component AppComboBox: ComboBox {
+        id: comboBox
+        readonly property int rowHeight: 32
+        signal itemChosen(int index)
+        popup: Popup {
+            y: comboBox.height
+            width: comboBox.width
+            // 高度由条数 × 行高直接算(最多 10 行): 不能依赖 contentItem.implicitHeight,
+            // 那样弹窗先以 2px 打开, 内层 ListView 首轮视口为 0, 之后就不再补建 delegate。
+            implicitHeight: Math.min(comboBox.count * comboBox.rowHeight + 2, 320)
+            padding: 1
+            contentItem: ListView {
+                id: popupList
+                clip: true
+                implicitHeight: contentHeight
+                model: comboBox.model
+                currentIndex: -1
+                delegate: Rectangle {
+                    id: popupRow
+                    required property int index
+                    readonly property bool isOn: comboBox.highlightedIndex === index
+                    width: ListView.view.width
+                    height: comboBox.rowHeight
+                    color: (hoverArea.containsMouse || popupRow.isOn) ? "#2c6fed" : root.cardInputBase
+                    Text {
+                        anchors.fill: parent
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: 10
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                        text: comboBox.textAt(index)
+                        color: (hoverArea.containsMouse || popupRow.isOn) ? "#ffffff" : root.cardInputText
+                    }
+                    MouseArea {
+                        id: hoverArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onClicked: {
+                            comboBox.currentIndex = index
+                            comboBox.popup.close()
+                            comboBox.itemChosen(index)
+                        }
+                    }
+                }
+            }
+            background: Rectangle {
+                color: root.cardInputBase
+                border.color: "#c0c4cc"
+                border.width: 1
+                radius: 4
+            }
+        }
+    }
+
+    // Token 限制数字框: 直接键入整数(0..10M), 回车/失焦提交。
+    // 不用 SpinBox: 本机 Qt Quick Controls 解析到 org.deepin.dtk 样式, 其 SpinBox 的
+    // contentItem 在 editable 时对外部 value 回写触发 text 绑定环, 非 editable 时内部
+    // TextInput readOnly——两种情况都键不进去。TextField + IntValidator 是本页
+    // baseUrl/apiKey/name 已验证可行的通路。
+    component TokenField: TextField {
+        Layout.preferredWidth: 120
+        palette.base: root.cardInputBase
+        palette.text: root.cardInputText
+        validator: IntValidator { bottom: 0; top: 10000000 }
     }
 
     // ================= 侧边导航 =================
@@ -364,7 +397,7 @@ ApplicationWindow {
                                 }
                             }
                             Text { text: "api" }
-                            ComboBox {
+                            AppComboBox {
                                 id: apiCombo
                                 Layout.fillWidth: true
                                 model: ["openai-completions","openai-responses","openai-codex-responses",
@@ -398,6 +431,7 @@ ApplicationWindow {
                             clip: true
                             model: ListModel { id: modelsModel }
                             delegate: Rectangle {
+                                id: modelCard
                                 required property int index
                                 required property string id
                                 required property string name
@@ -434,7 +468,7 @@ ApplicationWindow {
                                             Layout.preferredWidth: 14
                                             MouseArea { anchors.fill: parent; onClicked: root.toggleModel(index) }
                                         }
-                                        ComboBox {
+                                        AppComboBox {
                                             id: idCombo
                                             Layout.fillWidth: true
                                             Layout.minimumWidth: 0
@@ -443,9 +477,13 @@ ApplicationWindow {
                                             currentIndex: -1
                                             textRole: "id"
                                             model: candidatesModel
+                                            palette.base: root.cardInputBase
+                                            palette.text: root.cardInputText
                                             Component.onCompleted: applyModelId()
-                                            onActivated: root.updateModel(index, { id: currentText, name: (name === "" ? currentText : name) })
-                                            onAccepted: root.updateModel(index, { id: editText })
+                                            // 鼠标点选走 itemChosen; 键盘 Enter 由 ComboBox 发 activated。
+                                            onItemChosen: root.applyModelId(modelCard.index, currentText)
+                                            onActivated: root.applyModelId(modelCard.index, currentText)
+                                            onAccepted: root.updateModel(modelCard.index, { id: editText })
                                         }
                                         TextField {
                                             Layout.fillWidth: true
@@ -453,6 +491,8 @@ ApplicationWindow {
                                             height: 32
                                             placeholderText: "显示名称"
                                             text: name
+                                            palette.base: root.cardInputBase
+                                            palette.text: root.cardInputText
                                             onEditingFinished: root.updateModel(index, { name: text })
                                         }
                                         Text {
@@ -472,9 +512,15 @@ ApplicationWindow {
                                         RowLayout {
                                             spacing: 8
                                             Text { text: "上下文" }
-                                            SpinBox { from: 0; to: 10000000; value: contextWindow; onValueChanged: root.updateModel(index, { contextWindow: value }) }
+                                            TokenField {
+                                                text: String(contextWindow)
+                                                onEditingFinished: root.updateModel(index, { contextWindow: parseInt(text, 10) || 0 })
+                                            }
                                             Text { text: "输出" }
-                                            SpinBox { from: 0; to: 10000000; value: maxTokens; onValueChanged: root.updateModel(index, { maxTokens: value }) }
+                                            TokenField {
+                                                text: String(maxTokens)
+                                                onEditingFinished: root.updateModel(index, { maxTokens: parseInt(text, 10) || 0 })
+                                            }
                                         }
                                         RowLayout {
                                             spacing: 8
@@ -542,7 +588,7 @@ ApplicationWindow {
                             spacing: 12
                             Text { text: role; font.bold: true; width: 90 }
                             Text { text: "绑定"; color: "#888" }
-                            ComboBox {
+                            AppComboBox {
                                 Layout.fillWidth: true
                                 editable: true
                                 editText: root.cfg["modelRoles." + role] || ""
@@ -590,21 +636,21 @@ ApplicationWindow {
                             columnSpacing: 16
                             rowSpacing: 8
                             Text { text: "深色主题 dark" }
-                            ComboBox {
+                            AppComboBox {
                                 Layout.minimumWidth: 220; editable: true
                                 editText: root.cfg["theme.dark"] || ""
                                 onCurrentTextChanged: root.touch("theme.dark", currentText)
                                 model: ["titanium","anthracite","dark-github","dark-nord","dark-dracula"]
                             }
                             Text { text: "浅色主题 light" }
-                            ComboBox {
+                            AppComboBox {
                                 Layout.minimumWidth: 220; editable: true
                                 editText: root.cfg["theme.light"] || ""
                                 onCurrentTextChanged: root.touch("theme.light", currentText)
                                 model: ["light","light-solarized","light-github"]
                             }
                             Text { text: "符号字形 symbolPreset" }
-                            ComboBox {
+                            AppComboBox {
                                 Layout.minimumWidth: 220; editable: true
                                 editText: root.cfg["symbolPreset"] || ""
                                 onCurrentTextChanged: root.touch("symbolPreset", currentText)
@@ -626,14 +672,14 @@ ApplicationWindow {
                             columnSpacing: 16
                             rowSpacing: 8
                             Text { text: "预设 preset" }
-                            ComboBox {
+                            AppComboBox {
                                 Layout.minimumWidth: 220; editable: true
                                 editText: root.cfg["statusLine.preset"] || ""
                                 onCurrentTextChanged: root.touch("statusLine.preset", currentText)
                                 model: ["default","minimal","compact","full","nerd","ascii","custom"]
                             }
                             Text { text: "分隔符 separator" }
-                            ComboBox {
+                            AppComboBox {
                                 Layout.minimumWidth: 220; editable: true
                                 editText: root.cfg["statusLine.separator"] || ""
                                 onCurrentTextChanged: root.touch("statusLine.separator", currentText)
@@ -660,7 +706,7 @@ ApplicationWindow {
                             columnSpacing: 16
                             rowSpacing: 8
                             Text { text: "加载动画 shimmer" }
-                            ComboBox {
+                            AppComboBox {
                                 Layout.minimumWidth: 220; editable: true
                                 editText: root.cfg["display.shimmer"] || ""
                                 onCurrentTextChanged: root.touch("display.shimmer", currentText)
@@ -702,7 +748,7 @@ ApplicationWindow {
                             columnSpacing: 16
                             rowSpacing: 8
                             Text { text: "默认思考级别 defaultThinkingLevel" }
-                            ComboBox {
+                            AppComboBox {
                                 Layout.minimumWidth: 220; editable: true
                                 editText: root.cfg["defaultThinkingLevel"] || ""
                                 onCurrentTextChanged: root.touch("defaultThinkingLevel", currentText)
