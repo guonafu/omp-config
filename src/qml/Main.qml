@@ -353,7 +353,7 @@ ApplicationWindow {
                     }
                 }
 
-                // ---- 右：Provider 详情 + 获取模型 + models ----
+                // ---- 右：Provider 详情 + models ----
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -410,14 +410,15 @@ ApplicationWindow {
 
                         RowLayout {
                             spacing: 8
-                            Button { text: "获取模型"; onClicked: root.beginFetch() }
-                            Button { text: "保存到 models.yml"; onClicked: root.saveCurrent() }
                             Text { id: statusText; color: "#666"; text: ""; elide: Text.ElideRight; Layout.fillWidth: true }
                         }
 
                         // ---- models 列表 ----
+                        // 标签单独一行: 3 个按钮已占满整行, 标签挤在同一行会被压成省略号
+                        Text { text: "models（本 provider）"; font.bold: true }
                         RowLayout {
-                            Text { text: "models（本 provider）"; font.bold: true; Layout.fillWidth: true }
+                            spacing: 8
+                            Button { text: "保存"; onClicked: root.saveCurrent() }
                             Button { text: "获取模型列表"; onClicked: root.beginFetch() }
                             Button { text: "＋ 添加模型"; onClicked: root.addModelCard() }
                         }
