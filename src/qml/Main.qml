@@ -86,6 +86,10 @@ ApplicationWindow {
         formProviderApi = p.api
         currentProviderName = p.name
         apiCombo.currentIndex = Math.max(0, apiCombo.model.indexOf(p.api))
+        // 候选 = 本 provider 最近一次「获取模型列表」的结果。必须放在重建 modelsModel 之前:
+        // 清空 candidatesModel 会重置各模型卡里可编辑 ComboBox 的 editText(已配置 id 显示被抹掉),
+        // 而 modelsModel 重建之后新建的卡片会在 Component.onCompleted 里自己回填 id。
+        candidatesModel.clear()
         modelsModel.clear()
         var list = ompBackend.loadProviderModels(p.name)
         for (var k = 0; k < list.length; ++k) {
@@ -152,6 +156,9 @@ ApplicationWindow {
         m.expanded = !m.expanded
         modelsModel.set(i, m)
     }
+    // 候选列表(candidatesModel)一变, Qt 会清空所有可编辑 ComboBox 的 editText,
+    // 下面已配置模型的 id 显示会被抹掉。刷新候选后递增该令牌, 由各卡片自己回填 id。
+    property int candidatesVersion: 0
     function updateModel(i, patch) {
         if (i < 0) return
         var m = modelsModel.get(i)
@@ -402,6 +409,14 @@ ApplicationWindow {
                                 radius: 6
                                 border.color: "#e0e0e0"
                                 color: "#fafbfb"
+                                // 模型 id 的显示值来自 modelsModel 数据(唯一真源); 编辑框只是编辑入口。
+                                // 可编辑 ComboBox 的 model 一变(append/clear), Qt 就把 editText 清空,
+                                // 故响应 root.candidatesVersion 变化, 按数据回填。
+                                function applyModelId() { idCombo.editText = id }
+                                Connections {
+                                    target: root
+                                    function onCandidatesVersionChanged() { applyModelId() }
+                                }
                                 ColumnLayout {
                                     id: cardCol
                                     width: parent.width
@@ -420,6 +435,7 @@ ApplicationWindow {
                                             MouseArea { anchors.fill: parent; onClicked: root.toggleModel(index) }
                                         }
                                         ComboBox {
+                                            id: idCombo
                                             Layout.fillWidth: true
                                             Layout.minimumWidth: 0
                                             height: 32
@@ -427,7 +443,7 @@ ApplicationWindow {
                                             currentIndex: -1
                                             textRole: "id"
                                             model: candidatesModel
-                                            Component.onCompleted: editText = id
+                                            Component.onCompleted: applyModelId()
                                             onActivated: root.updateModel(index, { id: currentText, name: (name === "" ? currentText : name) })
                                             onAccepted: root.updateModel(index, { id: editText })
                                         }
@@ -711,8 +727,9 @@ ApplicationWindow {
             candidatesModel.clear()
             for (var i = 0; i < ids.length; ++i)
                 candidatesModel.append({ id: ids[i] })
+            // 重建候选列表会把每个模型卡里可编辑 ComboBox 的 editText 清空, 通知卡片回填 id
+            ++candidatesVersion
             statusText.text = "获取到 " + ids.length + " 个模型，下拉可选"
-            modelIdCombo.currentIndex = -1
         }
         function onFetchFailed(reason) {
             statusText.text = "获取失败：" + reason
