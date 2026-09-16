@@ -27,6 +27,26 @@ ApplicationWindow {
     property var cfgPending: ({})
     property var roleVals: ({})
     ListModel { id: candidatesModel }
+    // 角色绑定的可选项 = 所有 provider 的所有模型, 取值形如 "provider/modelId"
+    // (与 omp 的 modelRoles 一致, 见 ~/.omp/agent/config.yml)。
+    ListModel { id: roleOptions }
+    ListModel { id: roleRows }
+    readonly property var roleNames: ["smol", "plan", "task", "slow", "default",
+                                      "vision", "commit", "tiny", "advisor"]
+    function rebuildRoleOptions() {
+        roleOptions.clear()
+        var provs = ompBackend.loadProviders()
+        for (var i = 0; i < provs.length; ++i) {
+            var models = ompBackend.loadProviderModels(provs[i].name)
+            for (var k = 0; k < models.length; ++k)
+                roleOptions.append({ ref: provs[i].name + "/" + models[k].id })
+        }
+        // 行必须跟着重建: 可编辑 ComboBox 的 model 一变就会按当前项重置 editText,
+        // 只有新建的行才能在自己的 Component.onCompleted 里按绑定值正确回填(同模型卡做法)。
+        roleRows.clear()
+        for (var r = 0; r < roleNames.length; ++r)
+            roleRows.append({ role: roleNames[r] })
+    }
     function loadCfg() { cfg = ompBackend.loadSettings() }
     function touch(p, v) { cfgPending[p] = v; cfg[p] = v }
     function saveCfg() { ompBackend.saveSettings(cfgPending); cfgPending = ({}) }
@@ -159,45 +179,177 @@ ApplicationWindow {
     component AppComboBox: ComboBox {
         id: comboBox
         readonly property int rowHeight: 32
+        readonly property int maxVisibleRows: 9
+        // 弹窗逐行文本。不能用 textAt() 直接在 delegate 里取值: 它是方法调用, 没有依赖
+        // 跟踪, 而第一个 delegate 往往在 model 就绪前就建好了 —— 求值一次拿到空串后就再也
+        // 不更新, 表现为下拉第一项空白(实测)。这里做成随 count/model 变化的绑定数据。
+        readonly property var rowTexts: {
+            var out = []
+            for (var i = 0; i < comboBox.count; ++i)
+                out.push(comboBox.textAt(i))
+            return out
+        }
+        // ---- 过滤框状态(契约见 docs/adr/0002-combobox-filter-box.md) ----
+        property string filterText: ""
+        property int activeIndex: -1          // 高亮行的原始候选项下标
+        // 过滤后的行: [{ index, text }], index 是原始候选项下标
+        readonly property var visibleRows: {
+            var all = comboBox.rowTexts
+            var q = comboBox.filterText.toLowerCase()
+            var out = []
+            for (var i = 0; i < all.length; ++i) {
+                var t = String(all[i])
+                if (q === "" || t.toLowerCase().indexOf(q) >= 0)
+                    out.push({ index: i, text: t })
+            }
+            return out
+        }
+        function firstMatchIndex(query) {
+            var q = String(query).toLowerCase()
+            var all = comboBox.rowTexts
+            for (var i = 0; i < all.length; ++i)
+                if (String(all[i]).toLowerCase().indexOf(q) >= 0) return i
+            return -1
+        }
+        // 打开时的高亮: 绑定值那一行; 不然沿用 currentIndex; 再不然第一行
+        function openHighlightIndex() {
+            var all = comboBox.rowTexts
+            // 可编辑下拉的值在 editText 里(displayText 对可编辑且 currentIndex=-1 时是空)
+            var shown = String(comboBox.editable ? comboBox.editText : comboBox.displayText)
+            if (shown !== "") {
+                for (var i = 0; i < all.length; ++i)
+                    if (String(all[i]) === shown) return i
+            }
+            if (comboBox.currentIndex >= 0 && comboBox.currentIndex < all.length)
+                return comboBox.currentIndex
+            return all.length > 0 ? 0 : -1
+        }
+        function moveHighlight(step) {
+            var rows = comboBox.visibleRows
+            if (rows.length === 0) { comboBox.activeIndex = -1; return }
+            var pos = 0
+            for (var i = 0; i < rows.length; ++i)
+                if (rows[i].index === comboBox.activeIndex) { pos = i; break }
+            pos = Math.max(0, Math.min(rows.length - 1, pos + step))
+            comboBox.activeIndex = rows[pos].index
+            popupList.positionViewAtIndex(pos, ListView.Contain)
+        }
+        function setFilterText(t) {
+            comboBox.filterText = t
+            comboBox.activeIndex = comboBox.firstMatchIndex(t)
+        }
+        function choose(originalIndex) {
+            if (originalIndex < 0) return
+            comboBox.currentIndex = originalIndex
+            comboBox.popup.close()
+            comboBox.itemChosen(originalIndex)
+        }
         signal itemChosen(int index)
+        // 兜底: 搜索框没拿到焦点时(比如焦点被别处抢走), 这里以 priority=BeforeItem 抢在
+        // ComboBox 自己的键盘逻辑之前处理同一份过滤语义 —— 否则非可编辑下拉的 keySearch
+        // 会把键入直接当成选值。搜索框持有焦点时这几条不会触发。
+        Keys.priority: Keys.BeforeItem
+        Keys.onPressed: function (event) {
+            if (!comboBox.popup.opened)
+                return
+            if (event.key === Qt.Key_Up) {
+                comboBox.moveHighlight(-1); event.accepted = true
+            } else if (event.key === Qt.Key_Down) {
+                comboBox.moveHighlight(1); event.accepted = true
+            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                comboBox.choose(comboBox.activeIndex); event.accepted = true
+            } else if (event.key === Qt.Key_Backspace) {
+                comboBox.setFilterText(comboBox.filterText.slice(0, -1)); event.accepted = true
+            } else if (event.key === Qt.Key_Escape) {
+                comboBox.popup.close(); event.accepted = true
+            } else if (event.text !== "" && (event.modifiers & ~Qt.ShiftModifier) === 0) {
+                comboBox.setFilterText(comboBox.filterText + event.text); event.accepted = true
+            }
+        }
         popup: Popup {
+            id: comboPopup
             y: comboBox.height
             width: comboBox.width
-            // 高度由条数 × 行高直接算(最多 10 行): 不能依赖 contentItem.implicitHeight,
-            // 那样弹窗先以 2px 打开, 内层 ListView 首轮视口为 0, 之后就不再补建 delegate。
-            implicitHeight: Math.min(comboBox.count * comboBox.rowHeight + 2, 320)
             padding: 1
-            contentItem: ListView {
-                id: popupList
+            focus: true                 // 弹窗要拿焦点, 弹窗内的搜索框才能成为焦点项
+            // 高度: 过滤行 + 分隔线 + 可见行(至少留一行给"无匹配"提示)
+            implicitHeight: comboBox.rowHeight + 1
+                            + Math.max(1, Math.min(comboBox.visibleRows.length, comboBox.maxVisibleRows)) * comboBox.rowHeight
+                            + 2
+            // 打开即清空过滤词, 并把高亮放到绑定值那行
+            onAboutToShow: {
+                comboBox.filterText = ""
+                comboBox.activeIndex = comboBox.openHighlightIndex()
+            }
+            // 打开即把焦点交给搜索框(光靠 focus: true 不足以成为焦点项, 实测)
+            onOpened: searchField.forceActiveFocus()
+            contentItem: Item {
+                id: popupBody
                 clip: true
-                implicitHeight: contentHeight
-                model: comboBox.model
-                currentIndex: -1
-                delegate: Rectangle {
-                    id: popupRow
-                    required property int index
-                    readonly property bool isOn: comboBox.highlightedIndex === index
-                    width: ListView.view.width
-                    height: comboBox.rowHeight
-                    color: (hoverArea.containsMouse || popupRow.isOn) ? "#2c6fed" : root.cardInputBase
-                    Text {
-                        anchors.fill: parent
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 10
-                        verticalAlignment: Text.AlignVCenter
-                        elide: Text.ElideRight
-                        text: comboBox.textAt(index)
-                        color: (hoverArea.containsMouse || popupRow.isOn) ? "#ffffff" : root.cardInputText
-                    }
-                    MouseArea {
-                        id: hoverArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        onClicked: {
-                            comboBox.currentIndex = index
-                            comboBox.popup.close()
-                            comboBox.itemChosen(index)
+                Column {
+                    anchors.fill: parent
+                    spacing: 0
+                    // 过滤行: 点一下就能在这里打字(真输入框, 带光标/选区)。
+                    // 焦点若被 Qt 收走, ComboBox 上的 Keys 拦截(见下)会接手同一份 filterText,
+                    // 两条路径最终都写 comboBox.filterText。
+                    TextField {
+                        id: searchField
+                        width: parent.width
+                        height: comboBox.rowHeight
+                        placeholderText: "搜索…"
+                        palette.base: root.cardInputBase
+                        palette.text: root.cardInputText
+                        text: comboBox.filterText
+                        onTextChanged: {
+                            if (!comboPopup.opened || !searchField.activeFocus) return
+                            comboBox.setFilterText(text)
                         }
+                        onAccepted: comboBox.choose(comboBox.activeIndex)
+                        Keys.onUpPressed: function (event) { event.accepted = true; comboBox.moveHighlight(-1) }
+                        Keys.onDownPressed: function (event) { event.accepted = true; comboBox.moveHighlight(1) }
+                        Keys.onEscapePressed: function (event) { event.accepted = true; comboBox.popup.close() }
+                    }
+                    Rectangle { width: parent.width; height: 1; color: "#e2e2e2" }
+                    ListView {
+                        id: popupList
+                        width: parent.width
+                        height: Math.min(comboBox.visibleRows.length, comboBox.maxVisibleRows) * comboBox.rowHeight
+                        clip: true
+                        model: comboBox.visibleRows
+                        currentIndex: -1
+                        delegate: Rectangle {
+                            id: popupRow
+                            required property var modelData
+                            readonly property bool isOn: comboBox.activeIndex === popupRow.modelData.index
+                            width: popupList.width
+                            height: comboBox.rowHeight
+                            color: (hoverArea.containsMouse || popupRow.isOn) ? "#2c6fed" : root.cardInputBase
+                            Text {
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 10
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                                text: String(popupRow.modelData.text)
+                                color: (hoverArea.containsMouse || popupRow.isOn) ? "#ffffff" : root.cardInputText
+                            }
+                            MouseArea {
+                                id: hoverArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: comboBox.choose(popupRow.modelData.index)
+                            }
+                        }
+                    }
+                    // 无匹配提示(候选项为空时同样显示这一行)
+                    Text {
+                        width: parent.width
+                        height: comboBox.rowHeight
+                        visible: comboBox.visibleRows.length === 0
+                        leftPadding: 10
+                        verticalAlignment: Text.AlignVCenter
+                        color: "#999"
+                        text: "无匹配"
                     }
                 }
             }
@@ -563,20 +715,9 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    model: ListModel {
-                        ListElement { role: "smol";    modelRef: "uniontech-ai/deepseek-v4-flash-0731:auto" }
-                        ListElement { role: "plan";    modelRef: "uniontech-ai/deepseek-v4-flash-0731" }
-                        ListElement { role: "task";    modelRef: "uniontech-ai-ch/deepseek-v4-flash-0731" }
-                        ListElement { role: "slow";    modelRef: "uniontech-ai/deepseek-v4-flash-0731:auto" }
-                        ListElement { role: "default"; modelRef: "uniontech-ai/deepseek-v4-flash-0731:low" }
-                        ListElement { role: "vision";  modelRef: "uniontech-ai/glm-5.3-flash:auto" }
-                        ListElement { role: "commit";  modelRef: "uniontech-ai-ch/deepseek-v4-flash:high" }
-                        ListElement { role: "tiny";    modelRef: "uniontech-ai-ch/deepseek-v4-flash-0731" }
-                        ListElement { role: "advisor"; modelRef: "uniontech-ai-ch/deepseek-v4-flash-0731:high" }
-                    }
+                    model: roleRows
                     delegate: Rectangle {
                         required property string role
-                        required property string modelRef
                         width: parent.width
                         height: 48
                         radius: 6
@@ -590,15 +731,24 @@ ApplicationWindow {
                             Text { text: role; font.bold: true; width: 90 }
                             Text { text: "绑定"; color: "#888" }
                             AppComboBox {
+                                id: roleCombo
                                 Layout.fillWidth: true
                                 editable: true
-                                editText: root.cfg["modelRoles." + role] || ""
+                                model: roleOptions
+                                textRole: "ref"
+                                // 保持 -1: 否则 ComboBox 会把 editText 同步成第一个候选项
+                                // (模型重建/刷新后更是如此), 覆盖掉回填的绑定值。同模型卡 id 栏做法。
+                                currentIndex: -1
+                                palette.base: root.cardInputBase
+                                palette.text: root.cardInputText
+                                // 优先未保存的编辑值, 其次 cfg 里的绑定值
+                                function applyRoleRef() {
+                                    editText = root.roleVals[role] !== undefined
+                                            ? root.roleVals[role]
+                                            : (root.cfg["modelRoles." + role] || "")
+                                }
+                                Component.onCompleted: applyRoleRef()
                                 onCurrentTextChanged: root.roleVals[role] = currentText
-                                model: ["uniontech-ai/deepseek-v4-flash-0731:auto",
-                                        "uniontech-ai/deepseek-v4-pro-0813",
-                                        "uniontech-ai-ch/deepseek-v4-flash-0731",
-                                        "uniontech-ai/glm-5.2",
-                                        "uniontech-ai/glm-5.3-flash"]
                             }
                         }
                     }
@@ -783,6 +933,8 @@ ApplicationWindow {
         }
         function onSaved(ok, message) {
             statusText.text = ok ? "✓ " + message : "✗ 保存失败：" + message
+            // provider/模型有增删改时刷新角色绑定的候选项
+            if (ok) root.rebuildRoleOptions()
         }
         function onSettingsSaved(ok, message) {
             var m = ok ? "✓ " + message : "✗ " + message
@@ -840,6 +992,7 @@ ApplicationWindow {
     Component.onCompleted: {
         loadCfg()
         fillProviders()
+        rebuildRoleOptions()
         if (providersModel.count > 0) {
             providerList.currentIndex = 0
         } else {
